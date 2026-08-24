@@ -1,0 +1,27 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# === 虚拟环境 ===
+.venv/
+venv/
+env/
+
+# === 向量库（由 data/ 重建而来，不提交）===
+chroma_db/
+
+# === 密钥与本地配置 ===
+.env
+.env.*
+*.local
+
+# === 私人文件 ===
+resume.txt
+
+# === 系统 / 其他 ===
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,12 @@
+# 不打包进 Docker 镜像的路径
+.git
+.gitignore
+.dockerignore
+.venv
+venv
+__pycache__
+*.pyc
+chroma_db
+.env
+resume.txt
+TESTING.md

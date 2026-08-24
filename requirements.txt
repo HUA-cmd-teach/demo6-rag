@@ -1,0 +1,14 @@
+# demo6 依赖锁定（Python 3.10）
+fastapi==0.141.1
+uvicorn==0.52.1
+chromadb==1.5.9
+sentence-transformers==5.7.0
+langchain-community==0.4.2
+langchain-core==1.5.3
+langchain-openai==1.4.1
+langchain-text-splitters==1.1.2
+pydantic==2.13.4
+docx2txt==0.9
+
+# 注：torch 由 sentence-transformers 自动引入。
+# Docker 构建时先装 CPU 版 torch（见 Dockerfile），避免拉取 2GB+ 的 CUDA 版。
