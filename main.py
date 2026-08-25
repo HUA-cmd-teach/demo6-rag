@@ -27,6 +27,8 @@ import os
 import shutil
 from pathlib import Path
 
+import httpx
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -54,6 +56,11 @@ REBUILD_ON_START = True                                  # 每次启动重建索
 API_KEY = os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("API_KEY")
 LLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 LLM_MODEL = os.environ.get("QWEN_MODEL", "qwen3.7-plus")
+
+# 绕开 Windows 系统代理（本机 127.0.0.1:26561 是 MITM 代理，证书不信任导致
+# httpx 走代理时报 SSL CERTIFICATE_VERIFY_FAILED）。trust_env=False 直连 DashScope，
+# 模块级复用同一 Client。Docker 云部署无该系统代理，此设置只是保持直连，同样安全。
+HTTPX_CLIENT = httpx.Client(trust_env=False)
 
 # ==================== 嵌入模型（本地 BGE）====================
 from sentence_transformers import SentenceTransformer
@@ -224,6 +231,7 @@ def chat(request: ChatRequest):
                 model=LLM_MODEL,
                 temperature=0,
                 streaming=True,
+                http_client=HTTPX_CLIENT,
             )
             full = ""
             for chunk in llm.stream(messages):
