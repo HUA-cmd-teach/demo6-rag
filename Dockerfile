@@ -3,14 +3,14 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# 国内网络优化：HF 模型走 hf-mirror，pip 走清华源
+# 国内网络优化：pip 走清华源；BGE 模型直接 COPY 进镜像（ModelScope 预下载），不走 HF
 ENV HF_HOME=/app/.cache/huggingface \
     SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers \
     HF_HUB_DISABLE_XET=1 \
-    HF_ENDPOINT=https://hf-mirror.com \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     PYTHONUNBUFFERED=1 \
-    HOME=/app
+    HOME=/app \
+    BGE_MODEL_PATH=/app/bge-model
 
 # CPU 版 torch：从上交大镜像直接下载 wheel 本地安装（约184MB，实测 15MB/s+）。
 # 不能用 pip --index-url 走该镜像：其 S3 后端返回 application/octet-stream，
@@ -23,8 +23,8 @@ RUN python -c "import urllib.request; urllib.request.urlretrieve('https://mirror
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 构建期预下载 BGE 模型（经 hf-mirror），运行时秒级加载
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-base-zh-v1.5')"
+# BGE 模型：由部署方预下载到 bge-model/（ModelScope 实测 ~190MB/s），COPY . . 会自动带入，
+# 运行时 main.py 读 BGE_MODEL_PATH=/app/bge-model 本地加载，不依赖 HuggingFace 网络。
 
 COPY . .
 
