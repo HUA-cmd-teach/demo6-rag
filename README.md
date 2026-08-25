@@ -2,7 +2,15 @@
 
 > 基于知识库检索增强生成（RAG）的流式智能问答，豆包风格单页前端，支持 SSE 打字机效果与来源引用展开。
 
-![Python](https://img.shields.io/badge/Python-3.10-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.141-green) ![Streaming](https://img.shields.io/badge/流式-SSE-orange)
+![Python](https://img.shields.io/badge/Python-3.10-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.141-green) ![Streaming](https://img.shields.io/badge/流式-SSE-orange) ![Deploy](https://img.shields.io/badge/部署-阿里云%20Docker-success)
+
+## 🚀 在线体验
+
+**http://118.178.56.172:8000**
+
+> 服务已部署在阿里云轻量服务器（Docker 容器，自启动），公网可直接访问。回答来自通义千问大模型 + 本地知识库检索，支持流式打字机输出与来源引用展开。
+
+![运行截图](docs/screenshot.png)
 
 ## 功能特性
 
@@ -107,22 +115,27 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 # http://localhost:8000
 ```
 
-> **关于 BGE 模型**：本机已存在本地模型时直接使用；否则自动从 HuggingFace Hub 下载 `BAAI/bge-base-zh-v1.5`（首次联网下载约 400MB）。
+> **关于 BGE 模型**：本机已存在本地模型时直接使用；否则自动从 HuggingFace Hub 下载 `BAAI/bge-base-zh-v1.5`（首次联网下载约 400MB）。Docker 构建时模型由部署方用 ModelScope 预下载（`snapshot_download('AI-ModelScope/bge-base-zh-v1.5', local_dir=bge-model)`，国内实测 ~190MB/s），`COPY . .` 带入镜像，运行时通过 `BGE_MODEL_PATH=/app/bge-model` 本地加载，不依赖构建期联网。
 
-## 部署到 Hugging Face Spaces
+## 部署到国内云服务器（阿里云示例）
 
-本项目已内置 `Dockerfile`，可一键部署到免费的 HF Spaces：
+本项目内置 `Dockerfile`，适配国内网络环境（清华 pip 源 / 上交大 torch 镜像 / ModelScope 模型），可部署到任意云服务器：
 
-1. [创建 Space](https://huggingface.co/new-space)：SDK 选 **Docker**，License 随意
-2. 本地推送代码：
+1. 准备服务器：装好 Docker，上传 `demo6/` 目录
+2. 预下载 BGE 模型到构建上下文：
    ```bash
-   git remote add hf https://huggingface.co/spaces/<用户名>/<space名>
-   git push hf main
+   pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple
+   python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/bge-base-zh-v1.5', local_dir='bge-model')"
    ```
-3. Space 页 → **Settings → Variables and secrets** 添加 `DASHSCOPE_API_KEY`
-4. 构建完成后访问 `https://<用户名>-<space名>.hf.space`
+3. 构建并启动（需配置 `DASHSCOPE_API_KEY`）：
+   ```bash
+   docker build -t demo6-rag .
+   docker run -d --name demo6-rag --restart unless-stopped \
+     -p 8000:8000 -e DASHSCOPE_API_KEY=sk-xxx demo6-rag
+   ```
+4. 云控制台防火墙放行 8000 端口，访问 `http://<服务器IP>:8000`
 
-> ⚠️ 免费 Space 闲置会休眠，首次访问需等待冷启动（模型加载 + 索引重建，约 1~3 分钟）。
+> ⚠️ 构建 tip：torch 使用上交大镜像 `https://mirror.sjtu.edu.cn/pytorch-wheels/cpu` 的 CPU wheel 直接下载安装；阿里云 pytorch 镜像已失效（返回无关 HTML），download.pytorch.org 国内仅 184KB/s 不推荐。
 
 ## 项目结构
 
