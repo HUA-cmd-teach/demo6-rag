@@ -14,11 +14,16 @@
 
 ## 功能特性
 
-- 🧠 **RAG 检索问答**：启动时扫描 `data/` 目录（txt/md/docx）→ 本地 BGE 向量化 → Chroma 持久化索引
+- 🧠 **RAG 混合检索问答**：启动时扫描 `data/` 目录（txt/md/docx）→ 本地 BGE 向量化 → FAISS 语义索引 + jieba/BM25 关键词索引，RRF 融合召回
 - ⚡ **SSE 流式输出**：回答逐字渲染，浏览器端 `fetch` + `ReadableStream` 解析
 - 📄 **来源引用**：回答附带检索到的知识来源，点击可展开原文
+- 🧠 **长短期记忆**：短期记忆按会话自动保存、请求时注入多轮上下文；用户事实抽取后向量化召回，作为长期记忆跨会话保留（持久化到 `memory_store.json`）
+- 🔒 **用户/会话隔离（无登录）**：前端匿名生成 `X-Client-Id`（用户维度）+ `X-Session-Id`（会话维度），记忆互不可见；「新会话」按钮一键开启新对话
 - ✍️ **离线优先**：嵌入用本地 BGE 模型，不依赖外部向量服务；回答模型走通义千问
 - 🛑 **停止生成**：前端 AbortController 支持随时中断
+- 🔄 **刷新不丢对话**：会话历史服务端保存，刷新页面自动恢复显示
+- ✨ **Markdown 流式渲染**：回答实时渲染标题/列表/加粗/代码块，不再显示原始语法
+- 🛡️ **限流与并发保护**：按 `X-Client-Id` 限流 + 全局并发上限，防公网滥用
 
 ## 使用说明
 
@@ -31,13 +36,13 @@
 
 ### 推荐测试问题
 
-知识库默认收录了关于「财富自由」的文档，用这些问题能立刻体验 RAG 效果：
+知识库默认收录了 DeepSeek 技术介绍文档，用这些问题能立刻体验 RAG 效果：
 
 | 问题 | 体验点 |
 |---|---|
-| 财富自由的核心是什么？ | 基础问答 + 来源引用 |
-| 如何构建被动收入？ | 检索多篇文档内容 |
-| 普通人积累本金有哪些方法？ | 长回答 + 流式打字机 |
+| DeepSeek 的核心技术是什么？ | 基础问答 + 来源引用 |
+| DeepSeek 如何降低推理成本？ | 检索技术文档内容 |
+| DeepSeek-R1 用了什么强化学习方法？ | 长回答 + 流式打字机 |
 
 ### 界面示意
 
@@ -45,7 +50,7 @@
 ┌─────────────────────────────────────────────────┐
 │  💬 AI 智能助手                        ● 服务在线 │
 │                                                 │
-│  我  财富自由的核心是什么？                      │
+│  我  DeepSeek 的核心技术是什么？                 │
 │  AI  📄 参考 3 篇文档 ▸                          │
 │      ▍真正的财富自由，从来不是坐拥无尽财富…      │
 │                                                 │
@@ -59,26 +64,35 @@
 ```bash
 curl -sN -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"query":"财富自由的核心是什么？","top_k":3}'
+  -H "X-Client-Id: demo-user-1" \
+  -H "X-Session-Id: demo-session-1" \
+  -d '{"query":"DeepSeek 的核心技术是什么？","top_k":3}'
 ```
 
 依次收到 SSE 事件流：
 
 ```
+event: session  # 会话确认：{session_id, history_turns}
+event: memory   # 长期记忆召回：{facts: [{text, score}]}
 event: source   # 检索来源（前端展示引用）
 event: token    # 回答增量（逐字渲染，可能多条）
 event: done     # 回答结束
 ```
 
+> `X-Client-Id` / `X-Session-Id` 是**无登录**的用户与会话标识：前端首访生成匿名 ID 存 localStorage，浏览器刷新不换人；点「新会话」生成新的会话 ID。后端按两者隔离记忆。历史不再需要前端整包回传，`history` 请求字段已废弃。
+
 ## 架构
 
 ```mermaid
 graph LR
-    U[浏览器前端<br/>index.html] -->|SSE 流式| A[FastAPI<br/>main.py]
-    A -->|向量检索| C[(Chroma<br/>chroma_db)]
+    U[浏览器前端<br/>index.html] -->|SSE 流式<br/>X-Client-Id/X-Session-Id| A[FastAPI<br/>main.py]
+    A -->|语义召回| F[(FAISS<br/>faiss_index)]
+    A -->|关键词召回| B2[(jieba + BM25)]
     A -->|BGE 嵌入| B[本地 BGE<br/>bge-base-zh-v1.5]
     A -->|OpenAI 兼容接口| Q[通义千问<br/>qwen3.7-plus]
-    D[(data/ 知识库)] -->|启动时重建索引| C
+    A -->|读写长短期记忆| M[(memory_store.json)]
+    D[(data/ 知识库)] -->|启动时重建索引| F
+    D -->|分词建 BM25| B2
 ```
 
 ## 技术栈
@@ -86,7 +100,9 @@ graph LR
 | 层 | 选型 |
 |---|---|
 | Web 框架 | FastAPI + Uvicorn |
-| 向量库 | Chroma（持久化，无需外部服务） |
+| 语义检索 | FAISS（持久化，无需外部服务） |
+| 关键词检索 | jieba 分词 + BM25（rank-bm25） |
+| 融合策略 | RRF（Reciprocal Rank Fusion，k=60） |
 | 嵌入模型 | BGE-base-zh-v1.5（本地 / HuggingFace Hub） |
 | 回答模型 | 通义千问 qwen3.7-plus（DashScope OpenAI 兼容接口） |
 | 前端 | 原生 HTML + fetch SSE（无框架） |
@@ -141,10 +157,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 ```
 demo6/
-├── main.py            # FastAPI 后端：RAG 检索 + SSE 流式接口 + 索引构建
+├── main.py            # FastAPI 后端：混合检索 + 长短期记忆 + SSE 流式接口 + 索引构建
 ├── index.html         # 豆包风格单页前端（fetch + ReadableStream 解析 SSE）
 ├── data/              # 知识库文档（txt/md/docx），启动时自动重建索引
-├── chroma_db/         # Chroma 持久化索引（由 data/ 重建，勿提交）
+├── faiss_index/       # FAISS 持久化索引（由 data/ 重建，勿提交）
+├── memory_store.json  # 长短期记忆（运行时生成，勿提交）
 ├── requirements.txt   # 依赖锁定
 ├── Dockerfile         # HF Spaces 部署镜像
 └── TESTING.md         # 联调测试记录
@@ -154,8 +171,9 @@ demo6/
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/chat` | RAG 流式问答，SSE 事件：`source` / `token` / `done` / `error` |
-| GET | `/api/health` | 健康检查 |
+| POST | `/api/chat` | RAG 流式问答（需 `X-Client-Id`/`X-Session-Id` 请求头），SSE 事件：`session` / `memory` / `source` / `token` / `done` / `error` |
+| GET | `/api/history` | 当前会话短期记忆（前端刷新页面时恢复对话显示） |
+| GET | `/api/health` | 健康检查（含记忆统计） |
 | GET | `/` | 前端页面 |
 | GET | `/docs` | Swagger 接口文档 |
 
@@ -172,6 +190,8 @@ demo6/
 ## 说明
 
 - `REBUILD_ON_START = True`：每次启动重建索引，保证 **索引 == data 目录**；新增知识后重启即可
+- 防护：`/api/chat` 按 `X-Client-Id` 滑动窗口限流（默认 30 次/60s）+ 全局并发上限 10，超限返回 429 SSE `error` 事件
+- 检索为 **混合召回**：FAISS 语义 + jieba/BM25 关键词，RRF 融合，语义与关键词互补召回
 - 未配置 `DASHSCOPE_API_KEY` 时，接口退化为直接返回检索原文，方便离线调试
 - 回答模型可用环境变量 `QWEN_MODEL` 覆盖（默认 `qwen3.7-plus`）
 

@@ -58,6 +58,13 @@
   .status { position: absolute; right: 24px; font-size: 12px; color: var(--text-2); }
   .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2fbf71; margin-right: 6px; }
   .status .dot.off { background: #c9cdd4; }
+  .new-session {
+    position: absolute; right: 142px;
+    border: 1px solid var(--border); background: var(--card); color: var(--accent);
+    font-size: 12px; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+    transition: all .15s ease;
+  }
+  .new-session:hover { border-color: var(--accent); box-shadow: 0 4px 12px rgba(79,124,255,.12); }
 
   /* ---------- 输出区 ---------- */
   main {
@@ -206,6 +213,9 @@
   .source-panel .src-item { margin-bottom: 8px; }
   .source-panel .src-item:last-child { margin-bottom: 0; }
   .source-panel .src-head { font-weight: 600; color: var(--text); font-size: 12px; margin-bottom: 2px; }
+  .memory-line {
+    font-size: 11px; color: var(--text-2); line-height: 1.5; margin-bottom: 6px;
+  }
 
   /* ---------- 输入区 ---------- */
   .input-wrap {
@@ -260,7 +270,8 @@
 <header>
   <div class="logo">AI</div>
   <h1>AI 智能助手</h1>
-  <span class="badge">知识库 RAG · 流式输出</span>
+  <span class="badge">RAG 混合检索 · 长短期记忆</span>
+  <button id="newSessionBtn" title="开启新会话（长期记忆仍保留）">＋ 新会话</button>
   <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">连接中</span></div>
 </header>
 
@@ -272,9 +283,9 @@
       <h2>你好，我是你的 AI 助手</h2>
       <p>基于知识库检索回答，支持流式输出，试试下面的问题</p>
       <div class="chips">
-        <button data-q="财富自由的核心是什么？">财富自由的核心是什么？</button>
-        <button data-q="如何构建被动收入？">如何构建被动收入？</button>
-        <button data-q="普通人积累本金有哪些方法？">普通人积累本金有哪些方法？</button>
+        <button data-q="DeepSeek 的核心技术是什么？">DeepSeek 的核心技术是什么？</button>
+        <button data-q="DeepSeek 如何降低推理成本？">DeepSeek 如何降低推理成本？</button>
+        <button data-q="DeepSeek-R1 用了什么强化学习方法？">DeepSeek-R1 用了什么强化学习方法？</button>
       </div>
     </div>
   </div>
@@ -288,7 +299,7 @@
       <svg id="stopIcon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
     </button>
   </div>
-  <div class="hint">内容由 AI 生成，仅供参考 · demo6 · FastAPI + Chroma + 本地 BGE + 通义千问</div>
+  <div class="hint">内容由 AI 生成，仅供参考 · demo6 · FastAPI + FAISS/jieba-BM25 混合检索 + 本地 BGE + 通义千问</div>
 </div>
 
 <script>
@@ -304,6 +315,40 @@ const statusText = document.getElementById('statusText');
 let controller = null;          // 当前请求的 AbortController
 let currentTurn = null;         // 正在渲染的 AI 回答气泡
 let currentCursor = null;       // 流式光标元素
+let historyTurns = 0;           // 当前会话已对话轮数（来自 session 事件）
+let currentAnswer = '';         // 流式累积的回答文本（markdown 节流渲染用）
+let renderTimer = null;         // markdown 节流渲染定时器
+const RENDER_INTERVAL = 80;     // 重渲染间隔（ms），控制打字机刷新频率
+
+/* ---------------- 无登录的用户/会话隔离 ----------------
+   client_id：匿名用户 ID（首访生成，localStorage 持久，重启不换人）
+   session_id：会话 ID（每次对话一个，点「新会话」重置）
+   两者经请求头 X-Client-Id / X-Session-Id 传给后端，后端据此隔离记忆。 */
+function uuid() {
+  return (crypto.randomUUID && crypto.randomUUID()) ||
+    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+}
+const getClientId = () => {
+  let id = localStorage.getItem('demo6_client_id');
+  if (!id) { id = uuid(); localStorage.setItem('demo6_client_id', id); }
+  return id;
+};
+let sessionId = localStorage.getItem('demo6_session_id') || uuid();
+const getSessionId = () => sessionId;
+
+function newSession() {
+  sessionId = uuid();
+  localStorage.setItem('demo6_session_id', sessionId);
+  historyTurns = 0;
+  chatEl.innerHTML = '';
+  chatEl.appendChild(emptyEl);
+  emptyEl.style.display = '';
+  currentTurn = null; currentCursor = null;
+  scrollBottom();
+}
 
 /* ---------------- 工具函数 ---------------- */
 function escapeHtml(s) {
@@ -377,12 +422,25 @@ function addSources(bubble, sources) {
   panel.style.display = 'none';
   panel.className = 'source-panel';
   panel.innerHTML = sources.map(s =>
-    `<div class="src-item"><div class="src-head">${s.source} · 相似度 ${s.score}</div><div>${escapeHtml(s.text)}</div></div>`
+    `<div class="src-item"><div class="src-head">${s.source} · 融合 ${s.score} · 语义 ${s.semantic ?? '-'} · BM25 ${s.bm25}</div><div>${escapeHtml(s.text)}</div></div>`
   ).join('');
   toggle.onclick = () => { panel.style.display = panel.style.display === 'none' ? 'block' : 'none'; };
   row.appendChild(toggle);
   row.appendChild(panel);
   bubble.appendChild(row);
+}
+
+/** 在回答上方展示会话轮数 + 本次召回的长期记忆（演示长短期记忆） */
+function addSessionLine(bubble, turns, facts) {
+  if (!bubble) return;
+  const line = document.createElement('div');
+  line.className = 'memory-line';
+  let text = `💬 会话第 ${turns} 轮`;
+  if (facts && facts.length) {
+    text += ` · 🧠 长期记忆 ${facts.length} 条：${facts.map(f => f.text.replace(/^用户提到：/, '')).join('；')}`;
+  }
+  line.textContent = text;
+  bubble.appendChild(line);
 }
 
 /* ---------------- SSE 流式解析 ---------------- */
@@ -398,6 +456,7 @@ async function send() {
   scrollBottom();
 
   // 准备 AI 气泡
+  currentAnswer = '';
   currentTurn = addAiBubble();
   currentCursor = document.createElement('span');
   currentCursor.className = 'cursor';
@@ -410,7 +469,11 @@ async function send() {
   try {
     const resp = await fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Client-Id': getClientId(),
+        'X-Session-Id': getSessionId(),
+      },
       body: JSON.stringify({ query, top_k: 3 }),
       signal: controller.signal,
     });
@@ -437,9 +500,12 @@ async function send() {
       appendAnswer(`\n\n⚠️ 请求出错：${err.message}`);
     }
   } finally {
+    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+    if (currentTurn) flushRender();        // 流式结束/中断时补一次最终渲染
     setSending(false);
     if (currentCursor) { currentCursor.remove(); currentCursor = null; }
     currentTurn = null;
+    currentAnswer = '';
   }
 }
 
@@ -452,7 +518,12 @@ function handleEvent(part) {
   if (!data) return;
   let obj; try { obj = JSON.parse(data); } catch { return; }
 
-  if (event === 'source') {
+  if (event === 'session') {
+    historyTurns = obj.history_turns || 0;
+  } else if (event === 'memory') {
+    addSessionLine(currentTurn, historyTurns + 1, obj.facts || []);
+    scrollBottom();
+  } else if (event === 'source') {
     addSources(currentTurn, obj.sources);
     scrollBottom();
   } else if (event === 'token') {
@@ -464,13 +535,40 @@ function handleEvent(part) {
   }
 }
 
-/** 把文本追加到当前 AI 气泡（光标保持在末尾） */
+/** 获取回答内容容器（首次创建，并把光标挪进去）。放在记忆行/来源之后，保持 DOM 顺序。 */
+function getAnswerContainer() {
+  if (!currentTurn._answerEl) {
+    currentTurn._answerEl = document.createElement('div');
+    currentTurn._answerEl.className = 'answer-content';
+    currentTurn.appendChild(currentTurn._answerEl);
+  }
+  if (currentCursor && currentCursor.parentNode !== currentTurn._answerEl) {
+    currentTurn._answerEl.appendChild(currentCursor);
+  }
+  return currentTurn._answerEl;
+}
+
+/** 把累积文本用 renderMarkdown 渲染进容器（补一次最终渲染 / 节流后的刷新） */
+function flushRender() {
+  if (!currentTurn) return;
+  const el = getAnswerContainer();
+  if (currentCursor) currentCursor.remove();
+  el.innerHTML = renderMarkdown(currentAnswer);
+  if (currentCursor) el.appendChild(currentCursor);
+  scrollBottom();
+}
+
+function scheduleRender() {
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => { renderTimer = null; flushRender(); }, RENDER_INTERVAL);
+}
+
+/** 追加文本到当前 AI 回答：先累积，再节流重渲染，实现 markdown 流式打字机 */
 function appendAnswer(text) {
   if (!currentTurn) return;
-  if (currentCursor) currentCursor.remove();
-  currentTurn.insertAdjacentText('beforeend', text);
-  if (currentCursor) currentTurn.appendChild(currentCursor);
-  scrollBottom();
+  currentAnswer += text;
+  getAnswerContainer();
+  scheduleRender();
 }
 
 function setSending(sending) {
@@ -500,6 +598,8 @@ sendBtn.onclick = () => {
   send();
 };
 
+document.getElementById('newSessionBtn').onclick = newSession;
+
 inputEl.addEventListener('input', autoGrow);
 inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -517,14 +617,39 @@ document.querySelectorAll('.chips button').forEach(btn => {
   };
 });
 
-/* ---------------- 启动：健康检查 ---------------- */
+/* ---------------- 启动：健康检查 + 恢复历史对话 ---------------- */
 async function checkHealth() {
   try {
     const resp = await fetch('/api/health');
     setOnline(resp.ok);
   } catch { setOnline(false); }
 }
+
+/** 刷新页面时从服务端恢复当前会话的对话显示（短期记忆服务端已保存） */
+async function restoreHistory() {
+  try {
+    const resp = await fetch('/api/history', {
+      headers: { 'X-Client-Id': getClientId(), 'X-Session-Id': getSessionId() },
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const turns = data.turns || [];
+    if (!turns.length) return;
+    emptyEl.style.display = 'none';
+    for (const t of turns) {
+      if (t.role === 'user') {
+        addUserBubble(t.content);
+      } else {
+        const bubble = addAiBubble();
+        bubble.innerHTML = renderMarkdown(t.content);
+      }
+    }
+    scrollBottom();
+  } catch { /* 失败则保持空态，不影响使用 */ }
+}
+
 checkHealth();
+restoreHistory();
 </script>
 </body>
 </html>

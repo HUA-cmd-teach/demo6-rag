@@ -11,7 +11,12 @@ venv/
 env/
 
 # === 向量库（由 data/ 重建而来，不提交）===
+faiss_index/
+# 旧 Chroma 索引（已废弃）
 chroma_db/
+
+# === 用户/会话记忆（运行时生成，不提交）===
+memory_store.json
 
 # === 密钥与本地配置 ===
 .env
